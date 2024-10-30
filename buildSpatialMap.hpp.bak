@@ -1,0 +1,634 @@
+#pragma once
+#include <iostream>
+#include <vector>
+#include<unordered_map>
+#include<ctime>
+#include<cstdlib>
+#include <filesystem>
+#include <fstream>
+#include<chrono>
+#include <omp.h>
+#include <boost/thread/thread.hpp>
+#include <pcl/io/pcd_io.h>
+#include <pcl/point_types.h>///n
+#include <pcl/search/kdtree.h>
+#include <pcl/search/search.h>
+#include <pcl/filters/statistical_outlier_removal.h>//n
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/surface/mls.h>
+typedef pcl::PointXYZINormal PointType;
+typedef pcl::PointCloud<pcl::PointXYZINormal>::Ptr PointCloudINormalPtr; 
+typedef pcl::PointXYZRGB PointTRGB;
+typedef pcl::PointCloud<PointTRGB>::Ptr PointCloudRGBPtr; 
+// 定义 XYZID 坐标的结构体
+template <typename T= int64_t>
+struct XYZID {
+    T xid, yid, zid,sid;
+    
+    // 重载哈希函数
+    size_t operator()(const XYZID& xyzid) const {
+        // 使用简单的哈希算法，将 x、y、z 合并为一个哈希值
+        return std::hash<T>()(xyzid.xid) ^ std::hash<T>()(xyzid.yid) ^ std::hash<T>()(xyzid.zid)^ std::hash<T>()(xyzid.sid);
+    }
+    // 重载比较运算符
+    bool operator==(const XYZID& other) const {
+        return xid == other.xid && yid == other.yid && zid == other.zid&& sid == other.sid;
+    }
+};
+
+/// @brief MLS平滑函数 推荐默认值参数
+/// @param cloud 
+/// @param outcloud 
+/// @param Ploynomialorder 
+/// @param radius 
+/// @param IsComputeNormal 
+void MLS_smooth_PointINormalHandle(PointCloudINormalPtr cloud,PointCloudINormalPtr outcloud,int Ploynomialorder=2,float radius=0.03,bool IsComputeNormal=false)
+{
+    //todo remove fomat transform in ubuntu20.04
+    PointCloudRGBPtr cloud_rgb(new pcl::PointCloud<pcl::PointXYZRGB>);
+    int pc_num=cloud->size();
+    for(int i=0;i<pc_num;++i)
+    {
+       pcl::PointXYZRGB point_rgb;
+       point_rgb.x= cloud->points[i].x;
+       point_rgb.y= cloud->points[i].y;
+       point_rgb.z= cloud->points[i].z;
+       point_rgb.r= cloud->points[i].intensity;
+       point_rgb.g= cloud->points[i].curvature;
+       cloud_rgb->push_back(point_rgb);
+    }
+    cloud.reset();
+    pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGB>);
+    // pcl::PointCloud<pcl::PointXYZINormal> mls_points;
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr mls_points_rgb(new pcl::PointCloud<pcl::PointXYZRGB>);
+    pcl::MovingLeastSquares<pcl::PointXYZRGB, pcl::PointXYZRGB> mls;
+    mls.setComputeNormals(IsComputeNormal);  //设置在最小二乘计算中需要进行法线估计
+	mls.setInputCloud(cloud_rgb);
+    mls.setPolynomialOrder(Ploynomialorder);
+	mls.setPolynomialFit(true); //设置false，可以加速平滑
+	mls.setSearchMethod(tree);
+	mls.setSearchRadius(radius); //单位m，设置用于拟合的K近邻半径
+    mls.process(*mls_points_rgb); 
+
+    cloud_rgb.reset(new pcl::PointCloud<pcl::PointXYZRGB>());
+    int pc_r_num=mls_points_rgb->size();
+    for(int i=0;i<pc_r_num;++i)
+    {
+       PointType point;
+       point.x= mls_points_rgb->points[i].x;
+       point.y= mls_points_rgb->points[i].y;
+       point.z= mls_points_rgb->points[i].z;
+       point.intensity= mls_points_rgb->points[i].r;
+       point.curvature= mls_points_rgb->points[i].g;
+       outcloud->push_back(point);
+    }
+    // return mls_points;
+    mls_points_rgb.reset(new pcl::PointCloud<pcl::PointXYZRGB>());
+    return;
+}
+
+/// @brief 统计学滤波函数 推荐默认参数
+/// @param incloud 
+/// @param outcloud 
+/// @param MeanK 
+/// @param StdThresh 
+void SORFilter_PointINormalHandle(PointCloudINormalPtr incloud,PointCloudINormalPtr outcloud,int MeanK=50,float StdThresh=3.0)//MeanK=10~100 StdThresh=1.0~5.0
+{
+     // 创建统计学离群点移除过滤器
+    pcl::StatisticalOutlierRemoval<pcl::PointXYZINormal> sor;
+    sor.setInputCloud(incloud);
+    // 设置过滤邻域K三
+    sor.setMeanK(MeanK);
+    // 设置标准差的系数, 值越大，丢掉的点越少
+    sor.setStddevMulThresh(StdThresh);
+    sor.filter(*outcloud);
+    return;
+    // 保存去掉离群点之后的点云
+    // return cloud_filtered;
+    // 取反 保存被去掉离群点
+    // sor.setNegative(true);
+    // sor.filter(*cloud_filtered);
+}
+
+
+// #include <iostream>
+// #include <vector>
+// #include <fstream>
+// #include <pcl/search/pcl_search.h>
+// #include <pcl/filters/statistical_outlier_removal.h>
+// #include <pcl/io/pcd_io.h>
+// #include <pcl/point_types.h>
+// #include <pcl/visualization/pcl_visualizer.h>
+// #include <boost/thread/thread.hpp>
+// #include "view.h"
+// #include <time.h>
+
+// using namespace std;
+
+
+/// @brief openmp多线程加速版！！！！！！！！！！！！！！！！
+/// @param cloud_ 
+/// @param k_ 
+/// @param threshold_ 
+/// @param output_ 
+void calStaticFilter(PointCloudINormalPtr cloud_,PointCloudINormalPtr output_,int k_=50,double threshold_=3.0)
+{
+    pcl::search::KdTree<pcl::PointXYZINormal> tree;
+    tree.setInputCloud(cloud_);
+    int nCloud = cloud_->points.size();
+          
+    std::vector<float>aveDistance;
+    aveDistance.resize(nCloud,0);
+    double scale = 1.0 / (double)k_;
+
+    int thread_count = std::thread::hardware_concurrency();
+#if defined(_WIN32) || defined(_WIN64)
+    SYSTEM_INFO si;
+    ::GetSystemInfo(&si);
+    thread_count = si.dwNumberOfProcessors;
+#endif
+    if (thread_count > 8)
+    {
+        thread_count = thread_count * 0.8;
+    }
+    //std::cout<<"start openmp 2,num: "<<thread_count<<std::endl;
+    omp_set_num_threads(thread_count);
+#pragma omp parallel for schedule(static)    
+    for (int i = 0; i < nCloud; i++)
+    {
+        pcl::PointXYZINormal p = cloud_->points[i];
+        std::vector<float>distance;
+        pcl::Indices indi;
+        int n = tree.nearestKSearch(p, k_, indi, distance);
+        if (n > 0)
+        {
+            double sum = 0;
+            for (int j = 0; j < k_; j++)
+            {
+                sum += distance[j];                
+            }
+            aveDistance[i] = sum * scale;
+        }
+    }   
+    double sumAve = 0;
+    for (int i = 0; i < nCloud; i++)
+    {
+         sumAve += aveDistance[i];
+    }
+    double mean = sumAve / (double)nCloud;
+    double variance = 0.0;
+    for (int i = 0; i < nCloud; i++)
+    {
+        variance += pow(aveDistance[i] - mean, 2);
+    }
+    double standard_deviation = sqrt(variance);
+    double segThreshold = 0;
+    if (standard_deviation > mean)
+    {
+        segThreshold = mean + mean;
+    }
+    else
+    {
+        segThreshold = mean + standard_deviation * threshold_;
+    }
+    std::vector<int>vecIndex;
+    vecIndex.resize(nCloud, 0);
+    int nFilter = 0;
+    for (int i = 0; i < nCloud; i++)
+    {
+        if (aveDistance[i] < segThreshold)
+        {
+            vecIndex[i] = 1;
+            nFilter++;
+        }
+    }
+    output_->points.resize(nFilter);
+    for (int i = 0, j = 0; i < nCloud; i++)
+    {
+        if (vecIndex[i] > 0 && j < nFilter)
+        {
+            output_->points[j] = cloud_->points[i];
+            j++;
+        }
+    }
+    output_->width = nFilter;
+    output_->height = 1;
+}
+//calStaticFilter(cloud, 50, 1.0, cloud_filtered);
+
+
+
+/// @brief tranform pcd to global
+/// @param inCloud3D 
+/// @param inMat 
+/// @return 
+pcl::PointCloud<PointType>::Ptr TransformPointCloud(const pcl::PointCloud<PointType>::Ptr inCloud3D, const Eigen::Matrix4d& inMat)
+{
+        size_t cloudSize = inCloud3D->size();
+    pcl::PointCloud<PointType>::Ptr outCloud(new pcl::PointCloud<PointType>);
+    outCloud->resize(cloudSize);
+
+    for (size_t i = 0; i < cloudSize; ++i)
+    {
+        PointType point, pointOut;
+        point.x = inCloud3D->points[i].x;
+        point.y = inCloud3D->points[i].y;
+        point.z = inCloud3D->points[i].z;//add backpack heigh?
+        point.intensity = inCloud3D->points[i].intensity;
+        point.curvature= inCloud3D->points[i].curvature;
+
+        pointOut.x =
+            float(inMat(0, 0) * double(point.x) + inMat(0, 1) * double(point.y) + inMat(0, 2) * double(point.z) + inMat(0, 3));  // m
+        pointOut.y =
+            float(inMat(1, 0) * double(point.x) + inMat(1, 1) * double(point.y) + inMat(1, 2) * double(point.z) + inMat(1, 3));  // m
+        pointOut.z =
+            float(inMat(2, 0) * double(point.x) + inMat(2, 1) * double(point.y) + inMat(2, 2) * double(point.z) + inMat(2, 3));  // m
+
+        pointOut.intensity = point.intensity;
+        pointOut.curvature=point.curvature;
+        outCloud->points[i] = pointOut;
+    }
+    return outCloud;
+}
+ /// @brief 构建空间地图分幅索引
+ /// @param filenames 
+ /// @param poseMatVec 
+ /// @param grid_size 
+ /// @return 
+ std::unordered_map<XYZID<>, std::vector<std::string>, XYZID<>> buildSpatialMap(std::map<std::string ,std::string> filenames,
+    std::vector<std::pair<std::string,Eigen::Matrix4d>> poseMatVec,int grid_size)
+ {
+    std::unordered_map<XYZID<>, std::vector<std::string>, XYZID<>> spatial_map;
+    for(int i=0;i<poseMatVec.size();++i)
+    {
+        double x=poseMatVec[i].second(0,3),y=poseMatVec[i].second(1,3),z=poseMatVec[i].second(2,3);
+        double vidx = x / grid_size;
+        double vidy = y / grid_size;
+        double vidz = z / grid_size;
+        if (vidx < 0) vidx -= 1;
+        if (vidy < 0) vidy -= 1;
+        if (vidz < 0) vidz -= 1;
+        XYZID<> index = {static_cast<int64_t>(vidx), static_cast<int64_t>(vidy), static_cast<int64_t>(vidz),static_cast<int64_t>(0)};
+        
+        // 检查索引是否已存在于 spatial_map 中
+        if (spatial_map.find(index) != spatial_map.end()) {
+            // 如果已存在，将当前索引添加到对应的 vector 中
+            std::string id=poseMatVec[i].first;
+            if(filenames.find(id)!=filenames.end())
+            {
+                spatial_map[index].push_back(id);
+            }
+        } else {
+            // 如果不存在，创建一个新的 vector 并将当前索引存入
+            std::string id=poseMatVec[i].first;
+            if(filenames.find(id)!=filenames.end())
+            {
+                spatial_map[index] = {id};
+            }
+                
+        }
+    }
+    return spatial_map;
+ }
+
+ /// @brief 合并搜索函数
+ /// @param spatial_map 
+ /// @param key 
+ /// @param file_path 
+ /// @param value 
+ /// @param neighbor_indexs 
+ /// @param keys_to_erase 
+ void dfs(std::unordered_map<XYZID<>, std::vector<std::string>, XYZID<>>& spatial_map,const XYZID<>&key,
+        std::string file_path,std::vector<std::string>&value,std::vector<XYZID<>>& neighbor_indexs,std::vector<XYZID<>>& keys_to_erase)
+ {
+    if(value.size()>=50||value.size()==0) return;
+    int idx=key.xid,idy=key.yid,idz=key.zid;
+    std::vector<int> nez={1,-1, 2,-2};
+    for(int n=0;n<nez.size()-1&&value.size()>0;++n)
+    {
+        XYZID<> nei_index = {static_cast<int64_t>(idx), static_cast<int64_t>(idy), static_cast<int64_t>(idz+nez[n])};
+        auto neighbor_it = spatial_map.find(nei_index);
+        if (neighbor_it != spatial_map.end())
+        {
+            std::vector<std::string>& neighbor_value=spatial_map.find({nei_index})->second;//spatial_map[nei_index];
+            if(neighbor_value.size()>0)
+            {
+                value.insert(value.end(),neighbor_value.begin(),neighbor_value.end());
+                keys_to_erase.push_back(nei_index);
+                neighbor_indexs.push_back(nei_index);
+                neighbor_value.clear();
+                if(value.size()>=50)
+                {
+                    boost::filesystem::path p1(file_path+"/smoothCloud/merge_indexs");  
+                    if (!boost::filesystem::exists(p1)) {  
+                    boost::filesystem::create_directories(p1);  
+                    }
+                    std::string merge_indece=file_path+"/smoothCloud/merge_indexs/"+std::to_string(idx)+"_"+std::to_string(idy)+"_"+std::to_string(idz)+".txt";
+                    std::ofstream outfile(merge_indece, std::ios_base::app);
+                    if (outfile.is_open()) {
+                        for(int i=0;i<neighbor_indexs.size();++i)
+                        {
+                            outfile << neighbor_indexs[i].xid << " " << neighbor_indexs[i].yid << " " << neighbor_indexs[i].zid << std::endl; 
+                        }
+                        outfile.close();
+                        std::cout << "File created: " << merge_indece << std::endl;
+                    } else {
+                        std::cerr << "Unable to open file: " << merge_indece << std::endl;
+                    }
+                    neighbor_indexs.clear();
+                    return;
+                }
+            }
+        }
+    }
+    std::vector<int> nei = {1, 0, -1, 0, 1};//, 1, -1, -1, 1};
+    // bool found_neighbor = false;
+    for(int n=0;n<nei.size()-1;++n)
+    {
+        int ex=nei[n],ey=nei[n+1];
+        XYZID<> nei_index = {static_cast<int64_t>(idx+ex), static_cast<int64_t>(idy+ey), static_cast<int64_t>(idz)};
+        auto neighbor_it = spatial_map.find(nei_index);
+        if (neighbor_it != spatial_map.end())
+        {
+            std::vector<std::string>& neighbor_value=spatial_map.find({nei_index})->second;//spatial_map[nei_index];
+            if(neighbor_value.size()>0)
+            {
+                neighbor_value.insert(neighbor_value.end(),value.begin(),value.end());
+                // found_neighbor = true;
+                neighbor_indexs.push_back(key);
+                keys_to_erase.push_back(key); // 添加要删除的键     
+                value.clear();
+                if(neighbor_value.size()>=50)
+                {
+                    boost::filesystem::path p1(file_path+"/smoothCloud/merge_indexs");  
+                    if (!boost::filesystem::exists(p1)) {  
+                    boost::filesystem::create_directories(p1);  
+                    }
+                    std::string merge_indece=file_path+"/smoothCloud/merge_indexs/"+std::to_string(idx+ex)+"_"+std::to_string(idy+ey)+"_"+std::to_string(idz)+".txt";
+                    std::ofstream outfile(merge_indece, std::ios_base::app);
+                    if (outfile.is_open()) {
+                        for(int i=0;i<neighbor_indexs.size();++i)
+                        {
+                            outfile << neighbor_indexs[i].xid << " " << neighbor_indexs[i].yid << " " << neighbor_indexs[i].zid << std::endl; 
+                        }
+                        outfile.close();
+                        std::cout << "File created: " << merge_indece << std::endl;
+                    } else {
+                        std::cerr << "Unable to open file: " << merge_indece << std::endl;
+                    }
+                    neighbor_indexs.clear();
+                    return;
+                }
+                else 
+                {
+                    // neighbor_indexs.push_back(key);
+                    dfs(spatial_map,nei_index,file_path,neighbor_value,neighbor_indexs,keys_to_erase);
+                    return;    
+                }                
+            }
+            else{
+                if(n==nei.size()-1)
+                {
+                    boost::filesystem::path p1(file_path+"/smoothCloud/merge_indexs");  
+                    if (!boost::filesystem::exists(p1)) {  
+                    boost::filesystem::create_directories(p1);  
+                    }
+                    std::string merge_indece=file_path+"/smoothCloud/merge_indexs/"+std::to_string(idx+ex)+"_"+std::to_string(idy+ey)+"_"+std::to_string(idz)+".txt";
+                    std::ofstream outfile(merge_indece, std::ios_base::app);
+                    if (outfile.is_open()) {
+                        for(int i=0;i<neighbor_indexs.size();++i)
+                        {
+                            outfile << neighbor_indexs[i].xid << " " << neighbor_indexs[i].yid << " " << neighbor_indexs[i].zid << std::endl; 
+                        }
+                        outfile.close();
+                        std::cout << "File created: " << merge_indece << std::endl;
+                    } else {
+                        std::cerr << "Unable to open file: " << merge_indece << std::endl;
+                    }
+                    neighbor_indexs.clear();
+                    return;
+                }
+                else continue;
+            }
+                   
+        }
+                 
+    }
+ }
+
+/// @brief 
+/// @param sub_spatial_map 
+/// @param key 
+/// @param value 
+void split(std::unordered_map<XYZID<>, std::vector<std::string>, XYZID<>>& sub_spatial_map,const XYZID<>&key,
+        std::vector<std::string>&value)
+{   
+    assert(value.size()>100 && "split's frame size must be more than 100");
+    std::cout<<"start split"<<std::endl;
+    std::sort(value.begin(), value.end(),[](std::string value1,std::string value2){
+      return  std::stoll(value1)< std::stoll(value2);});
+    int submap_count=std::floor(value.size()/50);
+    int submap_size=int(value.size()/submap_count);
+    std::cout<<"split num and submap size:"<<submap_count<<" "<<submap_size<<std::endl;
+    for(int i=1;i<submap_count;++i)
+    {
+        std::vector<std::string>subvalue;
+        // subvalue.resize(submap_size+submap_count); // 或者使用其他初始化方法
+        XYZID<> subkey={static_cast<int64_t>(key.xid), static_cast<int64_t>(key.yid), static_cast<int64_t>(key.zid),static_cast<int64_t>(i)};
+        if(i!=submap_count-1)
+        {
+            subvalue.assign(value.begin()+i*submap_size,value.begin()+(i+1)*submap_size);
+        }
+        else
+            subvalue.assign(value.begin()+i*submap_size,value.end());
+        sub_spatial_map[subkey]=subvalue;
+
+    }
+    value.resize(submap_size);
+}
+
+
+/// @brief 调整空间地图稀疏合并
+/// @param spatial_map 
+/// @param file_path 
+void adjustmap(std::unordered_map<XYZID<>, std::vector<std::string>, XYZID<>>& spatial_map,std::string file_path )
+{
+    std::vector<XYZID<>> neighbor_indexs;//保存合并的键
+    std::vector<XYZID<>> keys_to_erase; // 保存要删除的键
+    std::unordered_map<XYZID<>, std::vector<std::string>, XYZID<>>sub_spatial_map;// 保存要分裂的键
+    for (auto it = spatial_map.begin(); it != spatial_map.end();++it ) 
+    {
+        const XYZID<>& key = it->first;
+        std::vector<std::string>& value = it->second;
+        if(value.size()>=40||value.size()==0) {continue;}
+        else if(value.size()<40)
+            dfs(spatial_map,key,file_path,value,neighbor_indexs,keys_to_erase);
+    }
+    // 在循环外部删除键
+    for (const auto& key : keys_to_erase) {
+        spatial_map.erase(key);
+    }
+    for (auto it = spatial_map.begin(); it != spatial_map.end();++it )
+    {
+        const XYZID<>& key = it->first;
+        std::vector<std::string>& value = it->second;
+        if(value.size()>100)
+            split(sub_spatial_map,key,value);
+        else 
+            continue;
+    } 
+    //添加分裂的键值
+    for (auto it = sub_spatial_map.begin(); it != sub_spatial_map.end();++it )
+    {
+        spatial_map.insert({it->first,it->second});
+    }
+}
+
+/**
+ * transform pose format
+*/
+std::unordered_map<std::string,Eigen::Matrix4d> pose_VecToMap(std::vector<std::pair<std::string,std::vector<double>>> poseVecVec)
+{
+     std::unordered_map<std::string,Eigen::Matrix4d>poseMatMap;
+      for(int i=0;i<poseVecVec.size();++i)
+    {
+        std::string curid=poseVecVec[i].first;
+        std::vector<double> curpose=poseVecVec[i].second;
+        assert(curpose.size()==7);      
+        double pose_x=curpose[0],pose_y=curpose[1],pose_z=curpose[2],
+               quat_x=curpose[3],quat_y=curpose[4],quat_z=curpose[5],quat_w=curpose[6];
+        Eigen::Matrix4d poseMat = Eigen::Matrix4d::Identity();
+        Eigen::Matrix3d rotmat = Eigen::Quaterniond(quat_w, quat_x, quat_y,quat_z).normalized().matrix();
+        poseMat.block<3, 3>(0, 0) = rotmat;
+        poseMat(0, 3) = pose_x;
+        poseMat(1, 3) = pose_y;
+        poseMat(2, 3) =pose_z; 
+        poseMatMap.insert({curid,poseMat});
+    }
+    return poseMatMap;
+}
+
+/// @brief transform pcdfilename format（VEC TO MAP）
+/// @param filenames 
+/// @return 
+std::map<std::string ,std::string> VecP_To_Map(std::vector<std::pair<std::string,std::string>>filenames)
+{
+    std::map<std::string ,std::string> filenamesMap;
+    for(int i=0;i<filenames.size();++i)
+    {
+        filenamesMap.insert({filenames[i].first,filenames[i].second});
+    }
+    return filenamesMap;
+}
+/**
+ * input: std::map<std::string id,stirng path>> filenames, std::map<std::string id,std::vector<double>> poseVecmap,
+ *      file_path   (包含Cloud、PgoPose的文件夹目录), grid_size   (轨迹网格大小)
+ * return: (deque of patch_cloud)
+*/
+ std::vector<std::pair<XYZID<>>,std::vector<std::string>>> general_tilemap(std::vector<std::pair<std::string,std::string>> filenames,
+    std::vector<std::pair<std::string,std::vector<double>>> poseVecVec,std::string file_path,int grid_size)
+{
+    std::vector<std::pair<std::string,Eigen::Matrix4d>> poseMatVec;
+    for(int i=0;i<poseVecVec.size();++i)
+    {
+        std::string curid=poseVecVec[i].first;
+        std::vector<double> curpose=poseVecVec[i].second;
+        assert(curpose.size()==7);      
+        double pose_x=curpose[0],pose_y=curpose[1],pose_z=curpose[2],
+               quat_x=curpose[3],quat_y=curpose[4],quat_z=curpose[5],quat_w=curpose[6];
+        Eigen::Matrix4d poseMat = Eigen::Matrix4d::Identity();
+        Eigen::Matrix3d rotmat = Eigen::Quaterniond(quat_w, quat_x, quat_y,quat_z).normalized().matrix();
+        poseMat.block<3, 3>(0, 0) = rotmat;
+        poseMat(0, 3) = pose_x;
+        poseMat(1, 3) = pose_y;
+        poseMat(2, 3) =pose_z; 
+        poseMatVec.push_back({curid,poseMat}); 
+    }
+    std::map<std::string ,std::string> filenamesMap=VecP_To_Map(filenames);
+    return general_tilemap(filenamesMap,poseMatVec,file_path,grid_size);
+}
+/**
+ * input: std::map<std::string id,stirng path>> filenames, std::vector<std::pair<std::string,Eigen::Matrix4d>> poseMatVec,
+ *      file_path   (包含Cloud、PgoPose的文件夹目录), grid_size   (轨迹网格大小)
+ * return: std::pair<std::vector<XYZID<>>,std::vector<std::vector<std::string>>>  {location,trace_indexs}
+*/
+std::vector<std::pair<XYZID<>>,std::vector<std::string>>> general_tilemap(std::map<std::string ,std::string> filenames,
+std::vector<std::pair<std::string,Eigen::Matrix4d>> poseMatVec,std::string file_path,int grid_size)
+{
+     // 构建空间地图
+    std::unordered_map<XYZID<>, std::vector<std::string>, XYZID<>> spatial_map = buildSpatialMap(filenames,poseMatVec, grid_size);
+    adjustmap(spatial_map,file_path);//调整分块：小于50个pose的进行合并，合并块的索引保存为txt文件
+    // std::vector<XYZID<>> locations;
+     std::vector<std::pair<XYZID<>>,std::vector<std::string>>> trace_indexs;
+    for(auto it = spatial_map.begin();it!=spatial_map.end();++it)
+    {
+        std::vector<std::string> trace_index;
+        trace_index=it->second;        //点云frame索引
+        // locations.push_back(it->first);//点云分块名 x_y_z_subnum_gridesize      
+        if(trace_index.size()>500)
+        {
+            trace_index.resize(500);
+        }
+        if(trace_index.size()==0)continue;
+        trace_indexs.push_back(std::make_pair{it->first,trace_index});
+    }
+    return trace_indexs;
+}
+/**
+ * input trace_index,filenames,poseVecVec
+*/
+PointCloudINormalPtr loadPatchPcd(std::vector<std::string>trace_index,std::vector<std::pair<std::string,std::string>>filenames,
+    std::vector<std::pair<std::string,std::vector<double>>> poseVecVec)
+{
+    std::unordered_map<std::string,Eigen::Matrix4d>poseMatMap=pose_VecToMap(poseVecVec);
+    std::map<std::string ,std::string> filenamesMap=VecP_To_Map(filenames);
+    return loadPatchPcd(trace_index,filenamesMap,poseMatMap);
+}
+PointCloudINormalPtr loadPatchPcd(std::vector<std::string>trace_index,std::map<std::string ,std::string> filenames,
+std::unordered_map<std::string,Eigen::Matrix4d>poseMatMap)
+{
+    PointCloudINormalPtr patch_cloud(new pcl::PointCloud<pcl::PointXYZINormal>);
+    for(int i=0;i<trace_index.size();++i)
+    {
+        const std::string filename=filenames[trace_index[i]];
+        PointCloudINormalPtr current_frame_cloud(new pcl::PointCloud<pcl::PointXYZINormal>);
+        pcl::io::loadPCDFile<pcl::PointXYZINormal>(filename, *current_frame_cloud);
+        Eigen::Matrix4d poseMat=poseMatMap.at(trace_index[i]);
+        *patch_cloud+=*TransformPointCloud(current_frame_cloud,poseMat);
+    }
+    return patch_cloud;
+}
+
+void demo(std::vector<std::pair<std::string,std::string>> filenames,
+    std::vector<std::pair<std::string,std::vector<double>>> poseVecVec,std::string file_path,int grid_size)
+{
+    std::vector<std::pair<XYZID<>>,std::vector<std::string>>> result=general_tilemap(filenames,poseVecVec,file_path,grid_size);
+    std::vector<XYZID<>>locations=result.first;
+    std::vector<std::vector<std::string>> trace_indexs=result.second;
+    assert(locations.size()==trace_indexs.size());
+    for(int i=0;i<trace_indexs.size();++i )
+    {
+        //todo 多线程处理
+        
+         PointCloudINormalPtr patch_cloud(new pcl::PointCloud<pcl::PointXYZINormal>);
+         patch_cloud=loadPatchPcd(trace_indexs[i],filenames,poseVecVec);
+
+         //todo 虑波函数 加平滑函数 
+         PointCloudINormalPtr filter_cloud(new pcl::PointCloud<pcl::PointXYZINormal>);
+         // ！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
+         calStaticFilter(patch_cloud,filter_cloud);patch_cloud.reset();//使用openmp加速版
+
+         PointCloudINormalPtr smooth_cloud(new pcl::PointCloud<pcl::PointXYZINormal>);
+         MLS_smooth_PointINormalHandle(filter_cloud,smooth_cloud);filter_cloud.reset();
+
+         //todo 保存 名字为
+           int64_t idx =locations[i].xid,idy=locations[i].yid,idz=locations[i].zid,ids=location[i].sid;//处理时 i 需保持一致，即点云块与其位置要对应以确保正确命名
+         std::string smooth_path=file_path+"/smoothCloud/"+std::to_string(idx)+"_"+std::to_string(idy)+"_"+std::to_string(idz)
+         +"_"+std::to_string(ids)+"_"+std::to_string(grid_size)+".pcd";
+
+        pcl::io::savePCDFileBinary(smooth_path,*smooth_cloud);
+    }
+    return ;
+}
+
+
